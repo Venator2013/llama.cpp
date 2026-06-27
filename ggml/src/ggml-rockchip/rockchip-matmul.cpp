@@ -170,11 +170,11 @@ void rk_compute_matmul(rk_device& dev, struct ggml_tensor* op) {
 
     uint32_t conv_con1 = (2 << 7) | (2 << 4);
     if (!(is_kn_64 || is_kn_256 || is_kn_512 || is_kn_lg_512 || is_m_1_kn_768 || is_m_1_k768_n2048 || is_m_1_kn_2048)) {
-        conv_con1 |= (1 << 12);
+        conv_con1 |= (1 << 29);
     }
     emit_raw(q, RKNPU_TARGET_CNA, REG_CNA_CONV_CON1, conv_con1);
 
-    emit_raw(q, RKNPU_TARGET_CNA, REG_CNA_CONV_CON2, p.feature_grains);
+    emit_raw(q, RKNPU_TARGET_CNA, REG_CNA_CONV_CON2, p.feature_grains << 4);
     emit_raw(q, RKNPU_TARGET_CNA, REG_CNA_CONV_CON3, (1 << 3) | 1);
     emit_raw(q, RKNPU_TARGET_CNA, REG_CNA_DATA_SIZE0, (p.data_in_width << 16) | p.data_in_height);
     emit_raw(q, RKNPU_TARGET_CNA, REG_CNA_DATA_SIZE1, ((p.align_in - 1) << 16) | p.align_in);
@@ -206,12 +206,12 @@ void rk_compute_matmul(rk_device& dev, struct ggml_tensor* op) {
 
     emit_raw(q, RKNPU_TARGET_CNA, REG_CNA_DCOMP_ADDR0, weight_buf.dma_addr);
 
-    emit_raw(q, RKNPU_TARGET_CORE, REG_CORE_MISC_CFG, (2 << 16) | (1 << 4));
+    emit_raw(q, RKNPU_TARGET_CORE, REG_CORE_MISC_CFG, (2 << 8) | 1);
     emit_raw(q, RKNPU_TARGET_CORE, REG_CORE_DATAOUT_SIZE_0, ((p.dataout_height - 1) << 16) | (p.dataout_width - 1));
     emit_raw(q, RKNPU_TARGET_CORE, REG_CORE_DATAOUT_SIZE_1, p.align_out - 1);
 
     emit_raw(q, RKNPU_TARGET_DPU, REG_DPU_FEATURE_MODE_CFG, (15 << 5) | (2 << 1));
-    emit_raw(q, RKNPU_TARGET_DPU, REG_DPU_DATA_FORMAT, (5 << 29) | (2 << 26) | (2 << 22));
+    emit_raw(q, RKNPU_TARGET_DPU, REG_DPU_DATA_FORMAT, (5 << 29) | (2 << 26) | 2);
 
     emit_raw(q, RKNPU_TARGET_DPU, REG_DPU_DST_BASE_ADDR, output_buf.dma_addr);
     emit_raw(q, RKNPU_TARGET_DPU, REG_DPU_DST_SURF_STRIDE, p.dst_surf_stride << 4);
