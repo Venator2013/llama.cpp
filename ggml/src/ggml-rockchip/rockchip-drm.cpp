@@ -4,6 +4,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <cstring>
+#include <cerrno>
 #include <cstdio>
 
 namespace ggml_rockchip {
@@ -182,7 +183,7 @@ bool rk_device::submit(const rk_buffer& task_buf, const rk_buffer& cmd_buf,
 
     int ret = ioctl(fd, DRM_IOCTL_RKNPU_SUBMIT, &submit_req);
     if (ret < 0) {
-        std::fprintf(stderr, "ggml-rockchip: RKNPU_SUBMIT ioctl failed with code %d\n", ret);
+        std::fprintf(stderr, "ggml-rockchip: RKNPU_SUBMIT ioctl failed with code %d, errno=%d (%s)\n", ret, errno, std::strerror(errno));
         return false;
     }
     return true;
