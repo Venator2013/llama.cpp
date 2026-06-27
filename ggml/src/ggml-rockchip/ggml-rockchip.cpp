@@ -219,6 +219,10 @@ static void ggml_backend_rockchip_device_get_props(ggml_backend_dev_t dev, struc
 static bool ggml_backend_rockchip_device_supports_op(ggml_backend_dev_t dev, const struct ggml_tensor * op) {
     UNUSED(dev);
     
+    if (op->op == GGML_OP_NONE) {
+        return true;
+    }
+    
     if (op->op == GGML_OP_ADD || op->op == GGML_OP_MUL || op->op == GGML_OP_SUB) {
         bool src0_ok = op->src[0] && op->src[0]->type == GGML_TYPE_F16 && ggml_is_contiguous(op->src[0]);
         bool src1_ok = op->src[1] && op->src[1]->type == GGML_TYPE_F16 && ggml_is_contiguous(op->src[1]);
