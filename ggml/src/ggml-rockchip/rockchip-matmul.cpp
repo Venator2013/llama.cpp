@@ -265,6 +265,25 @@ void rk_compute_matmul(rk_device& dev, struct ggml_tensor* op) {
         }
     }
 
+    if (m == 1 && n == 16 && k == 256) {
+        std::printf("ggml-rockchip matmul debug (m=1, n=16, k=256):\n");
+        std::printf("  Input (first 10): ");
+        for (int i = 0; i < 10; ++i) {
+            ggml_fp16_t f; std::memcpy(&f, &a_matrix[i], sizeof(f));
+            std::printf("%f ", ggml_fp16_to_fp32(f));
+        }
+        std::printf("\n  Weight (first 10 of row 0): ");
+        for (int i = 0; i < 10; ++i) {
+            ggml_fp16_t f; std::memcpy(&f, &b_matrix[i], sizeof(f));
+            std::printf("%f ", ggml_fp16_to_fp32(f));
+        }
+        std::printf("\n  Output raw (first 16): ");
+        for (int i = 0; i < 16; ++i) std::printf("%f ", raw_ptr[i]);
+        std::printf("\n  Output dst (first 16): ");
+        for (int i = 0; i < 16; ++i) std::printf("%f ", dst_ptr[i]);
+        std::printf("\n");
+    }
+
     dev.free(input_buf);
     dev.free(weight_buf);
     dev.free(output_buf);
