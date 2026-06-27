@@ -256,7 +256,15 @@ static bool ggml_backend_rockchip_device_supports_op(ggml_backend_dev_t dev, con
         bool dst_ok  = op->type == GGML_TYPE_F32 && ggml_is_contiguous(op);
         bool no_batch = op->src[0]->ne[2] == 1 && op->src[0]->ne[3] == 1 &&
                         op->src[1]->ne[2] == 1 && op->src[1]->ne[3] == 1;
-        return src0_ok && src1_ok && dst_ok && no_batch;
+
+        // Check hardware register limits for matrix dimensions
+        size_t k_ggml = op->src[0]->ne[0];
+        size_t m_ggml = op->src[0]->ne[1];
+        size_t n_ggml = op->src[1]->ne[1];
+
+        bool dims_ok = (m_ggml <= 16384) && (n_ggml <= 2048) && (k_ggml <= 16384);
+
+        return src0_ok && src1_ok && dst_ok && no_batch && dims_ok;
     }
     return false;
 }
