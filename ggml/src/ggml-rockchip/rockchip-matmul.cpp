@@ -199,7 +199,7 @@ void rk_compute_matmul(rk_device& dev, struct ggml_tensor* op) {
     emit_raw(q, RKNPU_TARGET_CNA, REG_CNA_FEATURE_DATA_ADDR, input_buf.dma_addr);
     emit_raw(q, RKNPU_TARGET_CNA, REG_CNA_DMA_CON0, (15 << 16) | 15);
     emit_raw(q, RKNPU_TARGET_CNA, REG_CNA_DMA_CON1, p.line_stride);
-    emit_raw(q, RKNPU_TARGET_CNA, REG_CNA_DMA_CON2, p.surf_stride);
+    emit_raw(q, RKNPU_TARGET_CNA, REG_CNA_DMA_CON2, p.surf_stride & 0x0fffffff);
 
     emit_raw(q, RKNPU_TARGET_CNA, REG_CNA_FC_DATA_SIZE0, (p.data_in_width << 16) | p.data_in_height);
     emit_raw(q, RKNPU_TARGET_CNA, REG_CNA_FC_DATA_SIZE1, p.align_in);
