@@ -7,10 +7,10 @@
 
 namespace ggml_rockchip {
 
+const uint32_t RKNPU_TARGET_CNA = 512;
+const uint32_t RKNPU_TARGET_CORE = 2048;
 const uint32_t RKNPU_TARGET_DPU = 4096;
 const uint32_t RKNPU_TARGET_DPU_RDMA = 8192;
-const uint32_t RKNPU_TARGET_CNA = 0;
-const uint32_t RKNPU_TARGET_CORE = 16384;
 
 static inline size_t align_up(size_t n, size_t alignment) {
     return (n + alignment - 1) & ~(alignment - 1);
