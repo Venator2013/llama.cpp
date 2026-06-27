@@ -3,6 +3,7 @@
 #include "ggml-impl.h"
 #include "rockchip-drm.h"
 #include "rockchip-ew.h"
+#include "rockchip-matmul.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -92,6 +93,8 @@ static enum ggml_status ggml_backend_rockchip_graph_compute(ggml_backend_t backe
             if (!rk_run_elementwise(*ctx->dev, ew_op, dma_src1, dma_src2, dma_dst, size)) {
                 return GGML_STATUS_FAILED;
             }
+        } else if (node->op == GGML_OP_MUL_MAT) {
+            rk_compute_matmul(*ctx->dev, node);
         } else {
             std::fprintf(stderr, "ggml-rockchip: error: unsupported op %d in graph_compute.\n", (int)node->op);
             return GGML_STATUS_FAILED;
@@ -246,6 +249,12 @@ static bool ggml_backend_rockchip_device_supports_op(ggml_backend_dev_t dev, con
         bool dst_ok  = op->type == GGML_TYPE_F16 && ggml_is_contiguous(op);
         bool same_shape = ggml_are_same_shape(op->src[0], op->src[1]);
         return src0_ok && src1_ok && dst_ok && same_shape;
+    }
+    if (op->op == GGML_OP_MUL_MAT) {
+        bool src0_ok = op->src[0] && op->src[0]->type == GGML_TYPE_F16 && ggml_is_contiguous(op->src[0]);
+        bool src1_ok = op->src[1] && op->src[1]->type == GGML_TYPE_F16 && ggml_is_contiguous(op->src[1]);
+        bool dst_ok  = op->type == GGML_TYPE_F32 && ggml_is_contiguous(op);
+        return src0_ok && src1_ok && dst_ok;
     }
     return false;
 }
