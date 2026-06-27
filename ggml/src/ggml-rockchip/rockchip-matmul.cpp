@@ -59,7 +59,10 @@ static wmma_params get_wmma_params(size_t m, size_t n, size_t k) {
     }
 
     size_t surf_groups = data_in_height / 4;
-    size_t surf_stride = (line_stride * (surf_groups - 1) + (surf_groups == 0 ? 1 : 0)) * (align_in >= 64 ? 1 : 0);
+    size_t surf_stride = 0;
+    if (surf_groups > 0) {
+        surf_stride = (line_stride * (surf_groups - 1)) * (align_in >= 64 ? 1 : 0);
+    }
     if ((k > 32 && k < 64) || (k > 64 && k <= 128) || (k > 128 && k < 256) || (k > 256 && k < 512)) {
         surf_stride = 0;
     }
