@@ -66,6 +66,7 @@ rk_buffer rk_device::alloc(size_t size, uint32_t flags, const std::string& name)
     buf.handle = mem_create.handle;
     buf.obj_addr = mem_create.obj_addr;
     buf.dma_addr = mem_create.dma_addr;
+    buf.flags = mem_create.flags;
 
     struct rknpu_mem_map mem_map;
     std::memset(&mem_map, 0, sizeof(mem_map));
@@ -113,6 +114,7 @@ void rk_device::free(rk_buffer& buf) {
 
 void rk_device::sync(const rk_buffer& buf, uint32_t flags) {
     if (fd < 0 || buf.handle == 0) return;
+    if (!(buf.flags & RKNPU_MEM_CACHEABLE)) return; // Cache sync is a no-op for non-cacheable buffers
 
     struct rknpu_mem_sync mem_sync;
     std::memset(&mem_sync, 0, sizeof(mem_sync));

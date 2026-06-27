@@ -14,6 +14,7 @@ struct rk_buffer {
     uint64_t obj_addr = 0;       // Kernel object address of the buffer
     uint32_t handle = 0;         // DRM GEM handle
     size_t   size = 0;
+    uint32_t flags = 0;         // GEM Allocation flags
     std::string name;
 };
 
