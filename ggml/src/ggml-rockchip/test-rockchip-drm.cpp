@@ -68,7 +68,7 @@ static uint16_t float_to_fp16(float val) {
 
 int main() {
     using namespace ggml_rockchip;
-    std::printf("--- Starting RKNPU DRM/ioctl 16x16x256 MatMul Test ---\n");
+    std::printf("--- Starting RKNPU DRM/ioctl 16x16x256 MatMul Gradient Test ---\n");
 
     rk_device dev;
     if (!dev.init()) {
@@ -96,23 +96,24 @@ int main() {
     std::vector<uint16_t> in_pack(m * align_in, 0);
     std::vector<uint16_t> wt_pack(align_out * align_in, 0);
 
-    // Populate weights and features with 1.0f
+    // Populate features: row r gets gradient starting at r * 0.01
+    // Weights: kernel c gets gradient starting at c * 0.01
     for (size_t r = 0; r < m; ++r) {
         for (size_t col = 0; col < k; ++col) {
-            in_pack[r * align_in + col] = float_to_fp16(1.0f);
+            in_pack[r * align_in + col] = float_to_fp16((r + col) * 0.01f);
         }
     }
     for (size_t r = 0; r < n; ++r) {
         for (size_t col = 0; col < k; ++col) {
             size_t wt_idx = (r / 16) * (align_in / 32) * 512 + (col / 32) * 512 + (r % 16) * 32 + (col % 32);
-            wt_pack[wt_idx] = float_to_fp16(1.0f);
+            wt_pack[wt_idx] = float_to_fp16((r + col) * 0.01f);
         }
     }
 
     size_t in_bytes = in_pack.size() * sizeof(uint16_t);
     size_t wt_bytes = wt_pack.size() * sizeof(uint16_t);
     size_t out_stride = align_out * sizeof(float);
-    size_t out_bytes = align_out * m * sizeof(float); // 32 * 16 * 4 = 2048 bytes
+    size_t out_bytes = align_out * m * sizeof(float);
 
     std::printf("Allocating GEM buffers...\n");
     rk_buffer task_buf = dev.alloc(1024, RKNPU_MEM_KERNEL_MAPPING, "task_buf");
@@ -206,15 +207,32 @@ int main() {
         return 1;
     }
 
-    std::printf("Task completed. NPU raw matrix (16x16):\n");
+    std::printf("Task completed. Comparing NPU raw vs CPU Reference (first 5x5):\n");
     const float* raw_ptr = static_cast<const float*>(output_buf.va);
     bool success = true;
-    for (size_t row = 0; row < m; ++row) {
-        std::printf("  row %2zu: ", row);
-        for (size_t col = 0; col < n; ++col) {
-            float val = raw_ptr[row * align_out + col];
-            std::printf("%7.2f ", val);
-            if (std::abs(val - 256.0f) > 1.0f) {
+
+    std::printf("  NPU output:\n");
+    for (size_t row = 0; row < 5; ++row) {
+        std::printf("    row %zu: ", row);
+        for (size_t col = 0; col < 5; ++col) {
+            std::printf("%7.2f ", raw_ptr[row * align_out + col]);
+        }
+        std::printf("\n");
+    }
+
+    std::printf("  CPU reference:\n");
+    for (size_t row = 0; row < 5; ++row) {
+        std::printf("    row %zu: ", row);
+        for (size_t col = 0; col < 5; ++col) {
+            float sum = 0.0f;
+            for (size_t i = 0; i < k; ++i) {
+                float a_val = (row + i) * 0.01f;
+                float b_val = (col + i) * 0.01f;
+                sum += a_val * b_val;
+            }
+            std::printf("%7.2f ", sum);
+            float npu_val = raw_ptr[row * align_out + col];
+            if (std::abs(npu_val - sum) > 1.0f) {
                 success = false;
             }
         }
@@ -224,7 +242,7 @@ int main() {
     if (success) {
         std::printf("\nSUCCESS: RKNPU matmul test passed successfully!\n");
     } else {
-        std::fprintf(stderr, "\nFAILURE: matmul results did not match expected 256.0!\n");
+        std::fprintf(stderr, "\nFAILURE: matmul results did not match expected CPU reference!\n");
     }
 
     std::printf("Freeing buffers...\n");
