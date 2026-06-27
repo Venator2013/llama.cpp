@@ -254,7 +254,9 @@ static bool ggml_backend_rockchip_device_supports_op(ggml_backend_dev_t dev, con
         bool src0_ok = op->src[0] && op->src[0]->type == GGML_TYPE_F16 && ggml_is_contiguous(op->src[0]);
         bool src1_ok = op->src[1] && op->src[1]->type == GGML_TYPE_F16 && ggml_is_contiguous(op->src[1]);
         bool dst_ok  = op->type == GGML_TYPE_F32 && ggml_is_contiguous(op);
-        return src0_ok && src1_ok && dst_ok;
+        bool no_batch = op->src[0]->ne[2] == 1 && op->src[0]->ne[3] == 1 &&
+                        op->src[1]->ne[2] == 1 && op->src[1]->ne[3] == 1;
+        return src0_ok && src1_ok && dst_ok && no_batch;
     }
     return false;
 }
