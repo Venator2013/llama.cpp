@@ -60,6 +60,12 @@ static enum ggml_status ggml_backend_rockchip_graph_compute(ggml_backend_t backe
     for (int i = 0; i < cgraph->n_nodes; i++) {
         struct ggml_tensor * node = cgraph->nodes[i];
         
+        if (node->op == GGML_OP_NONE || node->op == GGML_OP_VIEW || 
+            node->op == GGML_OP_RESHAPE || node->op == GGML_OP_PERMUTE || 
+            node->op == GGML_OP_TRANSPOSE) {
+            continue;
+        }
+        
         if (node->op == GGML_OP_ADD || node->op == GGML_OP_MUL || node->op == GGML_OP_SUB) {
             rk_ew_op ew_op;
             switch (node->op) {
@@ -227,7 +233,8 @@ static bool ggml_backend_rockchip_device_supports_op(ggml_backend_dev_t dev, con
         bool src0_ok = op->src[0] && op->src[0]->type == GGML_TYPE_F16 && ggml_is_contiguous(op->src[0]);
         bool src1_ok = op->src[1] && op->src[1]->type == GGML_TYPE_F16 && ggml_is_contiguous(op->src[1]);
         bool dst_ok  = op->type == GGML_TYPE_F16 && ggml_is_contiguous(op);
-        return src0_ok && src1_ok && dst_ok;
+        bool same_shape = ggml_are_same_shape(op->src[0], op->src[1]);
+        return src0_ok && src1_ok && dst_ok && same_shape;
     }
     return false;
 }
