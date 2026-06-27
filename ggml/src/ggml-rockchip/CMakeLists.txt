@@ -1,5 +1,5 @@
 # Finding OpenMP
-find_package(OpenMP REQUIRED)
+find_package(OpenMP)
 
 # Adding backend files
 ggml_add_backend_library(ggml-rockchip

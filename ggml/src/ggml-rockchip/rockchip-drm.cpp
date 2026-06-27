@@ -13,6 +13,8 @@ rk_device::rk_device() : fd(-1) {}
 
 rk_device::~rk_device() {
     if (fd >= 0) {
+        if (task_buf.va) free(task_buf);
+        if (cmd_buf.va) free(cmd_buf);
         close(fd);
     }
 }
@@ -35,6 +37,14 @@ bool rk_device::init() {
             if (ioctl(fd, DRM_IOCTL_RKNPU_ACTION, &action) >= 0) {
                 std::printf("ggml-rockchip: successfully opened RKNPU device at %s (Driver version: 0x%08x)\n", path, action.value);
                 reset();
+                task_buf = alloc(1024, RKNPU_MEM_KERNEL_MAPPING, "global_task_buf");
+                cmd_buf = alloc(2048, 0, "global_cmd_buf");
+                if (!task_buf.va || !cmd_buf.va) {
+                    std::fprintf(stderr, "ggml-rockchip: error: failed to allocate persistent DRM control buffers.\n");
+                    close(fd);
+                    fd = -1;
+                    return false;
+                }
                 return true;
             }
             close(fd);

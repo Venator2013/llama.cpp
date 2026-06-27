@@ -12,7 +12,7 @@ enum rk_ew_op {
     RK_EW_MAX = 3
 };
 
-void rk_run_elementwise(rk_device& dev, rk_ew_op op, 
+bool rk_run_elementwise(rk_device& dev, rk_ew_op op, 
                          uint64_t dma_src1, uint64_t dma_src2, 
                          uint64_t dma_dst, size_t size);
 

@@ -4,7 +4,7 @@
 #include <vector>
 #include <cmath>
 
-// Hilfsfunktion zur Konvertierung Float -> FP16 (Bits)
+// Helper function to convert Float -> FP16 (Bits)
 static uint16_t float_to_fp16(float val) {
     union { float f; uint32_t u; } u = { val };
     uint32_t sign = (u.u >> 16) & 0x8000;
@@ -12,15 +12,15 @@ static uint16_t float_to_fp16(float val) {
     uint32_t mantissa = u.u & 0x007fffff;
 
     if (exponent <= -15) {
-        return sign; // Underflow zu 0
+        return sign; // Underflow to 0
     } else if (exponent >= 16) {
-        return sign | 0x7c00; // Overflow zu Inf
+        return sign | 0x7c00; // Overflow to Inf
     }
     exponent += 15;
     return sign | (exponent << 10) | (mantissa >> 13);
 }
 
-// Hilfsfunktion zur Konvertierung FP16 -> Float
+// Helper function to convert FP16 -> Float
 static float fp16_to_float(uint16_t val) {
     uint32_t sign = (val & 0x8000) << 16;
     int32_t exponent = (val & 0x7c00) >> 10;
@@ -36,13 +36,6 @@ static float fp16_to_float(uint16_t val) {
     union { uint32_t u; float f; } u;
     u.u = sign | (exponent << 23) | mantissa;
     return u.f;
-}
-
-// Hilfsfunktion zum Packen eines 64-Bit Register-Kommandos
-static void emit_raw(std::vector<uint64_t>& q, uint32_t target, uint32_t reg, uint32_t value) {
-    target = target + 0x1;
-    uint64_t packed_value = ((uint64_t)(target & 0xFFFF) << 48) | ((uint64_t)(value & 0xFFFFFFFF) << 16) | (reg & 0xFFFF);
-    q.push_back(packed_value);
 }
 
 int main() {
@@ -69,7 +62,7 @@ int main() {
         return 1;
     }
 
-    // Vektor-Werte initialisieren: A = 2.0f, B = 3.0f
+    // Initialize vector values: A = 2.0f, B = 3.0f
     uint16_t* va_A = static_cast<uint16_t*>(input_buf.va);
     uint16_t* va_B = static_cast<uint16_t*>(weight_buf.va);
     uint16_t* va_C = static_cast<uint16_t*>(output_buf.va);
@@ -77,10 +70,10 @@ int main() {
     for (size_t i = 0; i < num_elements; ++i) {
         va_A[i] = float_to_fp16(2.0f);
         va_B[i] = float_to_fp16(3.0f);
-        va_C[i] = 0; // Output leeren
+        va_C[i] = 0; // Clear output buffer
     }
 
-    // Register-Befehlsliste bauen
+    // Build register command list
     std::vector<uint64_t> q;
 
     // 1. DPU Block Setup (Target: 4096 = DPU)
@@ -99,11 +92,11 @@ int main() {
     emit_raw(q, 8192, 0x5018, input_buf.dma_addr);  // REG_DPU_RDMA_RDMA_SRC_BASE_ADDR
     emit_raw(q, 8192, 0x5038, weight_buf.dma_addr); // REG_DPU_RDMA_RDMA_EW_BASE_ADDR
 
-    // 3. Hardware-Submit Befehle
+    // 3. Hardware Submit Commands
     q.push_back(0x2001000178495044);           // REG_DPU_RDMA_RDMA_FEATURE_MODE_CFG (0x5044) = 0x00017849
     q.push_back(0x0081000000180008);           // REG_PC_OPERATION_ENABLE (0x0008) = 0x0018
 
-    // Befehlsliste in den Command-Buffer kopieren
+    // Copy command list to DRM Command Buffer
     std::memcpy(cmd_buf.va, q.data(), q.size() * sizeof(uint64_t));
 
     std::printf("Submitting ADD task to RKNPU Core 0...\n");

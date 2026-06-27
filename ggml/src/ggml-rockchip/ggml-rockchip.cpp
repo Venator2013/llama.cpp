@@ -18,7 +18,8 @@ namespace ggml_rockchip {
 // Device context for RKNPU
 struct ggml_backend_rockchip_context {
     std::string name;
-    rk_device dev;
+    rk_device * dev = nullptr;
+    bool owns_dev = false;
     std::mutex mutex;
 };
 
@@ -38,6 +39,9 @@ static const char * ggml_backend_rockchip_name(ggml_backend_t backend) {
 
 static void ggml_backend_rockchip_free(ggml_backend_t backend) {
     auto * ctx = static_cast<ggml_backend_rockchip_context *>(backend->context);
+    if (ctx->owns_dev) {
+        delete ctx->dev;
+    }
     delete ctx;
     delete backend;
 }
@@ -80,7 +84,14 @@ static enum ggml_status ggml_backend_rockchip_graph_compute(ggml_backend_t backe
             uint64_t dma_dst  = get_dma_addr(node);
             size_t size = ggml_nelements(node);
             
-            rk_run_elementwise(ctx->dev, ew_op, dma_src1, dma_src2, dma_dst, size);
+            if (dma_src1 == 0 || dma_src2 == 0 || dma_dst == 0) {
+                std::fprintf(stderr, "ggml-rockchip: error: invalid DMA address in graph_compute (op %d)\n", (int)node->op);
+                return GGML_STATUS_FAILED;
+            }
+            
+            if (!rk_run_elementwise(*ctx->dev, ew_op, dma_src1, dma_src2, dma_dst, size)) {
+                return GGML_STATUS_FAILED;
+            }
         } else {
             std::fprintf(stderr, "ggml-rockchip: error: unsupported op %d in graph_compute.\n", (int)node->op);
             return GGML_STATUS_FAILED;
@@ -97,7 +108,7 @@ static void ggml_backend_rockchip_buffer_free_buffer(ggml_backend_buffer_t buffe
     auto * ctx = static_cast<ggml_backend_rockchip_buffer_context *>(buffer->context);
     auto * buft_ctx = static_cast<ggml_backend_rockchip_context *>(buffer->buft->device->context);
     
-    buft_ctx->dev.free(ctx->virtual_buffer);
+    buft_ctx->dev->free(ctx->virtual_buffer);
     delete ctx;
 }
 
@@ -119,14 +130,14 @@ static void ggml_backend_rockchip_buffer_set_tensor(ggml_backend_buffer_t buffer
     std::memcpy(static_cast<uint8_t *>(tensor->data) + offset, data, size);
     
     // Sync to device memory if needed (optional optimization)
-    buft_ctx->dev.sync(ctx->virtual_buffer, RKNPU_MEM_SYNC_TO_DEVICE);
+    buft_ctx->dev->sync(ctx->virtual_buffer, RKNPU_MEM_SYNC_TO_DEVICE);
 }
 
 static void ggml_backend_rockchip_buffer_get_tensor(ggml_backend_buffer_t buffer, const struct ggml_tensor * tensor, void * data, size_t offset, size_t size) {
     auto * ctx = static_cast<ggml_backend_rockchip_buffer_context *>(buffer->context);
     auto * buft_ctx = static_cast<ggml_backend_rockchip_context *>(buffer->buft->device->context);
     
-    buft_ctx->dev.sync(ctx->virtual_buffer, RKNPU_MEM_SYNC_FROM_DEVICE);
+    buft_ctx->dev->sync(ctx->virtual_buffer, RKNPU_MEM_SYNC_FROM_DEVICE);
     std::memcpy(data, static_cast<const uint8_t *>(tensor->data) + offset, size);
 }
 
@@ -150,7 +161,7 @@ static ggml_backend_buffer_t ggml_backend_rockchip_buffer_type_alloc_buffer(ggml
     auto * dev_ctx = static_cast<ggml_backend_rockchip_context *>(buft->device->context);
     
     auto * ctx = new ggml_backend_rockchip_buffer_context();
-    ctx->virtual_buffer = dev_ctx->dev.alloc(size, 0, "rockchip_virtual_buffer");
+    ctx->virtual_buffer = dev_ctx->dev->alloc(size, 0, "rockchip_virtual_buffer");
     
     if (!ctx->virtual_buffer.va) {
         delete ctx;
@@ -242,13 +253,12 @@ static bool ggml_backend_rockchip_device_supports_op(ggml_backend_dev_t dev, con
 static ggml_backend_t ggml_backend_rockchip_device_init_backend(ggml_backend_dev_t dev, const char * params) {
     UNUSED(params);
     
+    auto * reg_ctx = static_cast<ggml_backend_rockchip_context *>(dev->context);
+    
     auto * ctx = new ggml_backend_rockchip_context();
     ctx->name = "ROCKCHIP";
-    
-    if (!ctx->dev.init()) {
-        delete ctx;
-        return nullptr;
-    }
+    ctx->dev = reg_ctx->dev;
+    ctx->owns_dev = false;
 
     static const struct ggml_backend_i rockchip_backend_interface = {
         /* .get_name           = */ ggml_backend_rockchip_name,
@@ -342,8 +352,9 @@ GGML_API ggml_backend_reg_t ggml_backend_rockchip_reg(void) {
     if (!reg_ctx) {
         reg_ctx = new ggml_backend_rockchip_context();
         reg_ctx->name = "ROCKCHIP";
-        // Attempt driver init
-        reg_ctx->dev.init();
+        reg_ctx->dev = new rk_device();
+        reg_ctx->owns_dev = true;
+        reg_ctx->dev->init();
     }
 
     static struct ggml_backend_reg rockchip_backend_reg = {
