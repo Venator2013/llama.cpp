@@ -1,6 +1,6 @@
 #include <linux/ioctl.h>
 #include <linux/types.h>
-#include "rknpu_register.h"
+#include "rockchip-regs.h"
 
 #if !defined(__KERNEL__)
 #define __user
