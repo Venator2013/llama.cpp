@@ -302,6 +302,42 @@ void rk_compute_matmul(rk_device& dev, struct ggml_tensor* op) {
             }
             std::printf("\n");
         }
+        
+        // Compute all possible dot products
+        float ref_matrix[16][16];
+        for (size_t ar = 0; ar < m; ++ar) {
+            for (size_t br = 0; br < n; ++br) {
+                float sum = 0.0f;
+                for (size_t i = 0; i < k; ++i) {
+                    ggml_fp16_t fa; std::memcpy(&fa, &a_matrix[ar * k + i], sizeof(fa));
+                    ggml_fp16_t fb; std::memcpy(&fb, &b_matrix[br * k + i], sizeof(fb));
+                    sum += ggml_fp16_to_fp32(fa) * ggml_fp16_to_fp32(fb);
+                }
+                ref_matrix[ar][br] = sum;
+            }
+        }
+
+        std::printf("  NPU to Ref row-pair matches:\n");
+        for (size_t row = 0; row < m; ++row) {
+            for (size_t col = 0; col < n; ++col) {
+                float val = raw_ptr[row * p.align_out + col];
+                size_t best_ar = 99, best_br = 99;
+                float best_diff = 999.0f;
+                for (size_t ar = 0; ar < m; ++ar) {
+                    for (size_t br = 0; br < n; ++br) {
+                        float diff = std::abs(ref_matrix[ar][br] - val);
+                        if (diff < best_diff) {
+                            best_diff = diff;
+                            best_ar = ar;
+                            best_br = br;
+                        }
+                    }
+                }
+                if (best_diff < 0.2f) {
+                    std::printf("    npu[%zu, %zu] -> ref_dot(a_row=%zu, b_row=%zu) (diff=%f)\n", row, col, best_ar, best_br);
+                }
+            }
+        }
         std::printf("\n");
     }
 
