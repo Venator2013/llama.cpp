@@ -2,6 +2,7 @@
 #include "ggml-backend-impl.h"
 #include "ggml-impl.h"
 #include "rockchip-drm.h"
+#include "rockchip-ew.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -41,10 +42,44 @@ static void ggml_backend_rockchip_free(ggml_backend_t backend) {
     delete backend;
 }
 
+static uint64_t get_dma_addr(const struct ggml_tensor * tensor) {
+    if (!tensor || !tensor->buffer) return 0;
+    auto * buf_ctx = static_cast<ggml_backend_rockchip_buffer_context *>(tensor->buffer->context);
+    if (!buf_ctx || !buf_ctx->virtual_buffer.va) return 0;
+    
+    uint8_t * tensor_ptr = static_cast<uint8_t *>(tensor->data);
+    uint8_t * buffer_ptr = static_cast<uint8_t *>(buf_ctx->virtual_buffer.va);
+    
+    return buf_ctx->virtual_buffer.dma_addr + (tensor_ptr - buffer_ptr);
+}
+
 static enum ggml_status ggml_backend_rockchip_graph_compute(ggml_backend_t backend, struct ggml_cgraph* cgraph) {
-    UNUSED(backend);
-    UNUSED(cgraph);
-    // Stub implementation: currently does not execute anything on NPU
+    auto * ctx = static_cast<ggml_backend_rockchip_context *>(backend->context);
+    std::lock_guard<std::mutex> lock(ctx->mutex);
+
+    for (int i = 0; i < cgraph->n_nodes; i++) {
+        struct ggml_tensor * node = cgraph->nodes[i];
+        
+        if (node->op == GGML_OP_ADD || node->op == GGML_OP_MUL || node->op == GGML_OP_SUB) {
+            rk_ew_op ew_op;
+            switch (node->op) {
+                case GGML_OP_ADD: ew_op = RK_EW_ADD; break;
+                case GGML_OP_MUL: ew_op = RK_EW_MUL; break;
+                case GGML_OP_SUB: ew_op = RK_EW_SUB; break;
+                default: return GGML_STATUS_FAILED;
+            }
+            
+            uint64_t dma_src1 = get_dma_addr(node->src[0]);
+            uint64_t dma_src2 = get_dma_addr(node->src[1]);
+            uint64_t dma_dst  = get_dma_addr(node);
+            size_t size = ggml_nelements(node);
+            
+            rk_run_elementwise(ctx->dev, ew_op, dma_src1, dma_src2, dma_dst, size);
+        } else {
+            std::fprintf(stderr, "ggml-rockchip: error: unsupported op %d in graph_compute.\n", (int)node->op);
+            return GGML_STATUS_FAILED;
+        }
+    }
     return GGML_STATUS_SUCCESS;
 }
 
@@ -183,8 +218,14 @@ static void ggml_backend_rockchip_device_get_props(ggml_backend_dev_t dev, struc
 
 static bool ggml_backend_rockchip_device_supports_op(ggml_backend_dev_t dev, const struct ggml_tensor * op) {
     UNUSED(dev);
-    UNUSED(op);
-    return false; // Initially unsupported until backend ops are implemented
+    
+    if (op->op == GGML_OP_ADD || op->op == GGML_OP_MUL || op->op == GGML_OP_SUB) {
+        bool src0_ok = op->src[0] && op->src[0]->type == GGML_TYPE_F16 && ggml_is_contiguous(op->src[0]);
+        bool src1_ok = op->src[1] && op->src[1]->type == GGML_TYPE_F16 && ggml_is_contiguous(op->src[1]);
+        bool dst_ok  = op->type == GGML_TYPE_F16 && ggml_is_contiguous(op);
+        return src0_ok && src1_ok && dst_ok;
+    }
+    return false;
 }
 
 static ggml_backend_t ggml_backend_rockchip_device_init_backend(ggml_backend_dev_t dev, const char * params) {
