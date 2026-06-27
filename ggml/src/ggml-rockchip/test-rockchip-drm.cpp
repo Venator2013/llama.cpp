@@ -39,6 +39,7 @@ static float fp16_to_float(uint16_t val) {
 }
 
 int main() {
+    using namespace ggml_rockchip;
     std::printf("--- Starting RKNPU DRM/ioctl ADD operation test ---\n");
 
     ggml_rockchip::rk_device dev;
