@@ -28,7 +28,7 @@ void rk_run_elementwise(rk_device& dev, rk_ew_op op,
         return;
     }
 
-    const size_t MAX_ELEMENTS_PER_SUBMISSION = 65536;
+    const size_t MAX_ELEMENTS_PER_SUBMISSION = 4096;
     size_t processed = 0;
 
     while (processed < size) {

@@ -34,6 +34,7 @@ bool rk_device::init() {
             action.value = 0;
             if (ioctl(fd, DRM_IOCTL_RKNPU_ACTION, &action) >= 0) {
                 std::printf("ggml-rockchip: successfully opened RKNPU device at %s (Driver version: 0x%08x)\n", path, action.value);
+                reset();
                 return true;
             }
             close(fd);
