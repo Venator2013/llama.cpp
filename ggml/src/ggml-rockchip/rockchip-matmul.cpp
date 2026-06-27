@@ -270,6 +270,10 @@ void rk_compute_matmul(rk_device& dev, struct ggml_tensor* op) {
 
     if ((m == 1 && n == 16 && k == 256) || (m == 16 && n == 16 && k == 256)) {
         std::printf("ggml-rockchip matmul debug (m=%zu, n=%zu, k=%zu):\n", m, n, k);
+        std::printf("  Command buffer Q (%zu elements):\n", q.size());
+        for (size_t i = 0; i < q.size(); ++i) {
+            std::printf("    [%2zu] 0x%016llx\n", i, (unsigned long long)q[i]);
+        }
         std::printf("  weights_tensor: ne=[%lld, %lld, %lld, %lld], nb=[%zu, %zu, %zu, %zu]\n",
             weights_tensor->ne[0], weights_tensor->ne[1], weights_tensor->ne[2], weights_tensor->ne[3],
             weights_tensor->nb[0], weights_tensor->nb[1], weights_tensor->nb[2], weights_tensor->nb[3]);
