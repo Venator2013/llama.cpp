@@ -268,9 +268,9 @@ void rk_compute_matmul(rk_device& dev, struct ggml_tensor* op) {
         }
     }
 
-    if (m == 1 && n == 16 && k == 256) {
-        std::printf("ggml-rockchip matmul debug (m=1, n=16, k=256):\n");
-        std::printf("  Input (first 10): ");
+    if ((m == 1 && n == 16 && k == 256) || (m == 16 && n == 16 && k == 256)) {
+        std::printf("ggml-rockchip matmul debug (m=%zu, n=%zu, k=%zu):\n", m, n, k);
+        std::printf("  Input (first 10 of row 0): ");
         for (int i = 0; i < 10; ++i) {
             ggml_fp16_t f; std::memcpy(&f, &a_matrix[i], sizeof(f));
             std::printf("%f ", ggml_fp16_to_fp32(f));
@@ -284,6 +284,16 @@ void rk_compute_matmul(rk_device& dev, struct ggml_tensor* op) {
         for (int i = 0; i < 16; ++i) std::printf("%f ", raw_ptr[i]);
         std::printf("\n  Output dst (first 16): ");
         for (int i = 0; i < 16; ++i) std::printf("%f ", dst_ptr[i]);
+        std::printf("\n  Output ref (first 16 of row 0): ");
+        for (size_t col = 0; col < std::min((size_t)16, n); ++col) {
+            float sum = 0.0f;
+            for (size_t i = 0; i < k; ++i) {
+                ggml_fp16_t fa; std::memcpy(&fa, &a_matrix[i], sizeof(fa));
+                ggml_fp16_t fb; std::memcpy(&fb, &b_matrix[col * k + i], sizeof(fb));
+                sum += ggml_fp16_to_fp32(fa) * ggml_fp16_to_fp32(fb);
+            }
+            std::printf("%f ", sum);
+        }
         std::printf("\n");
     }
 
