@@ -220,13 +220,13 @@ void rk_compute_matmul(rk_device& dev, struct ggml_tensor* op) {
     emit_raw(q, RKNPU_TARGET_DPU, REG_DPU_DATA_CUBE_NOTCH_ADDR, (p.notch_val << 16) | p.notch_val);
     emit_raw(q, RKNPU_TARGET_DPU, REG_DPU_DATA_CUBE_CHANNEL, ((p.align_out - 1) << 16) | (p.align_out - 1));
 
-    emit_raw(q, RKNPU_TARGET_DPU, REG_DPU_BS_CFG, (1 << 3) | (1 << 2) | (1 << 1) | 1);
-    emit_raw(q, RKNPU_TARGET_DPU, REG_DPU_BS_OW_CFG, (3 << 9) | (3 << 6) | (3 << 3) | 1);
+    emit_raw(q, RKNPU_TARGET_DPU, REG_DPU_BS_CFG, (1 << 6) | (1 << 4) | (1 << 1) | 1);
+    emit_raw(q, RKNPU_TARGET_DPU, REG_DPU_BS_OW_CFG, (3 << 8) | (3 << 5) | (3 << 2) | 2);
 
     emit_raw(q, RKNPU_TARGET_DPU, REG_DPU_WDMA_SIZE_0, p.align_out - 1);
     emit_raw(q, RKNPU_TARGET_DPU, REG_DPU_WDMA_SIZE_1, ((p.dataout_height - 1) << 16) | (p.dataout_width - 1));
 
-    emit_raw(q, RKNPU_TARGET_DPU, REG_DPU_BN_CFG, (1 << 3) | (1 << 2) | (1 << 1) | 1);
+    emit_raw(q, RKNPU_TARGET_DPU, REG_DPU_BN_CFG, (1 << 6) | (1 << 4) | (1 << 1) | 1);
     emit_raw(q, RKNPU_TARGET_DPU, REG_DPU_EW_CFG, (1 << 9) | (1 << 8) | (1 << 7) | (1 << 1) | 1);
 
     emit_raw(q, RKNPU_TARGET_DPU, REG_DPU_SURFACE_ADD, (p.dst_surf_stride * 4) << 4);
