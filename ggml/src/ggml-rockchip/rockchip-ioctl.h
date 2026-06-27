@@ -1,5 +1,6 @@
 #include <linux/ioctl.h>
 #include <linux/types.h>
+#include <drm/drm.h>
 #include "rockchip-regs.h"
 
 #if !defined(__KERNEL__)
