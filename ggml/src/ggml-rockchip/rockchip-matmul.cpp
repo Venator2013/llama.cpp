@@ -280,19 +280,27 @@ void rk_compute_matmul(rk_device& dev, struct ggml_tensor* op) {
             ggml_fp16_t f; std::memcpy(&f, &b_matrix[i], sizeof(f));
             std::printf("%f ", ggml_fp16_to_fp32(f));
         }
-        std::printf("\n  Output raw (first 16): ");
-        for (int i = 0; i < 16; ++i) std::printf("%f ", raw_ptr[i]);
-        std::printf("\n  Output dst (first 16): ");
-        for (int i = 0; i < 16; ++i) std::printf("%f ", dst_ptr[i]);
-        std::printf("\n  Output ref (first 16 of row 0): ");
-        for (size_t col = 0; col < std::min((size_t)16, n); ++col) {
-            float sum = 0.0f;
-            for (size_t i = 0; i < k; ++i) {
-                ggml_fp16_t fa; std::memcpy(&fa, &a_matrix[i], sizeof(fa));
-                ggml_fp16_t fb; std::memcpy(&fb, &b_matrix[col * k + i], sizeof(fb));
-                sum += ggml_fp16_to_fp32(fa) * ggml_fp16_to_fp32(fb);
+        std::printf("\n  NPU raw matrix (%zux%zu):\n", m, n);
+        for (size_t row = 0; row < m; ++row) {
+            std::printf("    row %2zu: ", row);
+            for (size_t col = 0; col < n; ++col) {
+                std::printf("%7.3f ", raw_ptr[row * p.align_out + col]);
             }
-            std::printf("%f ", sum);
+            std::printf("\n");
+        }
+        std::printf("  CPU reference matrix (%zux%zu):\n", m, n);
+        for (size_t row = 0; row < m; ++row) {
+            std::printf("    row %2zu: ", row);
+            for (size_t col = 0; col < n; ++col) {
+                float sum = 0.0f;
+                for (size_t i = 0; i < k; ++i) {
+                    ggml_fp16_t fa; std::memcpy(&fa, &a_matrix[row * k + i], sizeof(fa));
+                    ggml_fp16_t fb; std::memcpy(&fb, &b_matrix[col * k + i], sizeof(fb));
+                    sum += ggml_fp16_to_fp32(fa) * ggml_fp16_to_fp32(fb);
+                }
+                std::printf("%7.3f ", sum);
+            }
+            std::printf("\n");
         }
         std::printf("\n");
     }
