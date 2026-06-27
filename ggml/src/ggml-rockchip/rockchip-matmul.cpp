@@ -280,7 +280,27 @@ void rk_compute_matmul(rk_device& dev, struct ggml_tensor* op) {
             ggml_fp16_t f; std::memcpy(&f, &b_matrix[i], sizeof(f));
             std::printf("%f ", ggml_fp16_to_fp32(f));
         }
-        std::printf("\n  NPU raw matrix (%zux%zu):\n", m, n);
+        std::printf("\n  in_pack (first 5 of row 0, 1, 2):\n");
+        for (size_t r = 0; r < std::min(m, (size_t)3); ++r) {
+            std::printf("    row %zu: ", r);
+            for (size_t i = 0; i < 5; ++i) {
+                ggml_fp16_t f; std::memcpy(&f, &in_pack[r * p.align_in + i], sizeof(f));
+                std::printf("%f ", ggml_fp16_to_fp32(f));
+            }
+            std::printf("\n");
+        }
+        std::printf("  wt_pack (first 5 of kernel 0, 1, 2):\n");
+        for (size_t r = 0; r < std::min(n, (size_t)3); ++r) {
+            std::printf("    kernel %zu: ", r);
+            for (size_t i = 0; i < 5; ++i) {
+                // Find where element i of kernel r is in wt_pack
+                size_t wt_idx = (r / 16) * (p.align_in / 32) * 512 + (i / 32) * 512 + (r % 16) * 32 + (i % 32);
+                ggml_fp16_t f; std::memcpy(&f, &wt_pack[wt_idx], sizeof(f));
+                std::printf("%f ", ggml_fp16_to_fp32(f));
+            }
+            std::printf("\n");
+        }
+        std::printf("  NPU raw matrix (%zux%zu):\n", m, n);
         for (size_t row = 0; row < m; ++row) {
             std::printf("    row %2zu: ", row);
             for (size_t col = 0; col < n; ++col) {
@@ -334,7 +354,7 @@ void rk_compute_matmul(rk_device& dev, struct ggml_tensor* op) {
                     }
                 }
                 if (best_diff < 0.2f) {
-                    std::printf("    npu[%zu, %zu] -> ref_dot(a_row=%zu, b_row=%zu) (diff=%f)\n", row, col, best_ar, best_br);
+                    std::printf("    npu[%zu, %zu] -> ref_dot(a_row=%zu, b_row=%zu) (diff=%f)\n", row, col, best_ar, best_br, best_diff);
                 }
             }
         }
