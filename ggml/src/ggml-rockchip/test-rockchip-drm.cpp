@@ -5,7 +5,7 @@
 #include <cmath>
 
 // Hilfsfunktion zur Konvertierung Float -> FP16 (Bits)
-uint16_t float_to_fp16(float val) {
+static uint16_t float_to_fp16(float val) {
     union { float f; uint32_t u; } u = { val };
     uint32_t sign = (u.u >> 16) & 0x8000;
     int32_t exponent = ((u.u >> 23) & 0xff) - 127;
@@ -21,7 +21,7 @@ uint16_t float_to_fp16(float val) {
 }
 
 // Hilfsfunktion zur Konvertierung FP16 -> Float
-float fp16_to_float(uint16_t val) {
+static float fp16_to_float(uint16_t val) {
     uint32_t sign = (val & 0x8000) << 16;
     int32_t exponent = (val & 0x7c00) >> 10;
     uint32_t mantissa = (val & 0x03ff) << 13;
@@ -39,7 +39,7 @@ float fp16_to_float(uint16_t val) {
 }
 
 // Hilfsfunktion zum Packen eines 64-Bit Register-Kommandos
-void emit_raw(std::vector<uint64_t>& q, uint32_t target, uint32_t reg, uint32_t value) {
+static void emit_raw(std::vector<uint64_t>& q, uint32_t target, uint32_t reg, uint32_t value) {
     target = target + 0x1;
     uint64_t packed_value = ((uint64_t)(target & 0xFFFF) << 48) | ((uint64_t)(value & 0xFFFFFFFF) << 16) | (reg & 0xFFFF);
     q.push_back(packed_value);
