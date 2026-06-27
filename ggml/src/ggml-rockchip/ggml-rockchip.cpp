@@ -80,6 +80,20 @@ static enum ggml_status ggml_backend_rockchip_graph_compute(ggml_backend_t backe
             uint64_t dma_dst  = get_dma_addr(node);
             size_t size = ggml_nelements(node);
             
+            std::fprintf(stderr, "ggml-rockchip: graph_compute %s size=%zu\n", ggml_op_desc(node), size);
+            std::fprintf(stderr, "  src0: '%s' %d [%d,%d,%d,%d] va=%p dma=0x%lx\n", 
+                         node->src[0]->name, (int)node->src[0]->type,
+                         (int)node->src[0]->ne[0], (int)node->src[0]->ne[1], (int)node->src[0]->ne[2], (int)node->src[0]->ne[3],
+                         node->src[0]->data, dma_src1);
+            std::fprintf(stderr, "  src1: '%s' %d [%d,%d,%d,%d] va=%p dma=0x%lx\n", 
+                         node->src[1]->name, (int)node->src[1]->type,
+                         (int)node->src[1]->ne[0], (int)node->src[1]->ne[1], (int)node->src[1]->ne[2], (int)node->src[1]->ne[3],
+                         node->src[1]->data, dma_src2);
+            std::fprintf(stderr, "  dst:  '%s' %d [%d,%d,%d,%d] va=%p dma=0x%lx\n", 
+                         node->name, (int)node->type,
+                         (int)node->ne[0], (int)node->ne[1], (int)node->ne[2], (int)node->ne[3],
+                         node->data, dma_dst);
+
             rk_run_elementwise(ctx->dev, ew_op, dma_src1, dma_src2, dma_dst, size);
         } else {
             std::fprintf(stderr, "ggml-rockchip: error: unsupported op %d in graph_compute.\n", (int)node->op);
