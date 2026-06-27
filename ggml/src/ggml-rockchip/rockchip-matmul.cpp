@@ -270,6 +270,15 @@ void rk_compute_matmul(rk_device& dev, struct ggml_tensor* op) {
 
     if ((m == 1 && n == 16 && k == 256) || (m == 16 && n == 16 && k == 256)) {
         std::printf("ggml-rockchip matmul debug (m=%zu, n=%zu, k=%zu):\n", m, n, k);
+        std::printf("  weights_tensor: ne=[%lld, %lld, %lld, %lld], nb=[%zu, %zu, %zu, %zu]\n",
+            weights_tensor->ne[0], weights_tensor->ne[1], weights_tensor->ne[2], weights_tensor->ne[3],
+            weights_tensor->nb[0], weights_tensor->nb[1], weights_tensor->nb[2], weights_tensor->nb[3]);
+        std::printf("  features_tensor: ne=[%lld, %lld, %lld, %lld], nb=[%zu, %zu, %zu, %zu]\n",
+            features_tensor->ne[0], features_tensor->ne[1], features_tensor->ne[2], features_tensor->ne[3],
+            features_tensor->nb[0], features_tensor->nb[1], features_tensor->nb[2], features_tensor->nb[3]);
+        std::printf("  dst_tensor: ne=[%lld, %lld, %lld, %lld], nb=[%zu, %zu, %zu, %zu]\n",
+            dst_tensor->ne[0], dst_tensor->ne[1], dst_tensor->ne[2], dst_tensor->ne[3],
+            dst_tensor->nb[0], dst_tensor->nb[1], dst_tensor->nb[2], dst_tensor->nb[3]);
         std::printf("  Input (first 10 of row 0): ");
         for (int i = 0; i < 10; ++i) {
             ggml_fp16_t f; std::memcpy(&f, &a_matrix[i], sizeof(f));
