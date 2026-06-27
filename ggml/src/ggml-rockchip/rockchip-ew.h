@@ -1,6 +1,7 @@
 #pragma once
 #include "rockchip-drm.h"
-#include "ggml.h"
+#include <cstdint>
+#include <cstddef>
 
 namespace ggml_rockchip {
 
@@ -12,7 +13,7 @@ enum rk_ew_op {
 };
 
 void rk_run_elementwise(rk_device& dev, rk_ew_op op, 
-                         const void* lhs, const void* rhs, 
-                         void* dst, size_t count);
+                         uint64_t dma_src1, uint64_t dma_src2, 
+                         uint64_t dma_dst, size_t size);
 
 } // namespace ggml_rockchip
