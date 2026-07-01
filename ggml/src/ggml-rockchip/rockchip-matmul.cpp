@@ -21,13 +21,15 @@ static wmma_params get_wmma_params(size_t m, size_t n, size_t k) {
     n = std::max((size_t)1, n);
     k = std::max((size_t)1, k);
 
+    size_t m_padded = align_up(m, 64);
+
     size_t align_in = std::max((size_t)32, align_up(k, 32));
     size_t align_out = std::max((size_t)32, align_up(n, 32));
 
     size_t data_in_width = 1;
-    size_t data_in_height = m;
+    size_t data_in_height = m_padded;
     size_t dataout_width = 1;
-    size_t dataout_height = m;
+    size_t dataout_height = m_padded;
     size_t out_width_stride = 1;
 
     bool is_kn_64 = (k == 64 && n == 64);
@@ -37,21 +39,11 @@ static wmma_params get_wmma_params(size_t m, size_t n, size_t k) {
     bool is_matmul_64 = (m == 64 && k == 64 && n == 64);
     bool is_matmul_256 = (m == 256 && k == 256 && n == 256);
 
-    size_t feature_grains = data_in_height + 1;
-    if (k > 7872) {
-        feature_grains = 2;
-    } else if (k > 128 && k <= 192) {
-        feature_grains = data_in_height;
-    } else if (k > 192 && k != 256) {
-        size_t denom = align_in * sizeof(uint16_t);
-        size_t grains = (2 * 32768 + denom - 1) / denom;
-        grains = (grains + 1) & ~1;
-        feature_grains = std::max((size_t)80, grains);
-    }
+    size_t feature_grains = m_padded + 1;
 
     size_t weight_bytes_per_kernel = align_in * sizeof(uint16_t);
     size_t fd_bytes = data_in_width * data_in_height * align_in * sizeof(uint16_t);
-    size_t data_bank = std::max((size_t)1, std::min((size_t)11, (fd_bytes + 32768 - 1) / 32768));
+    size_t data_bank = std::max((size_t)1, std::min((size_t)11, (fd_bytes + 1024 + 32768 - 1) / 32768));
 
     size_t line_stride = data_in_width * 4;
     if (k > 32 && k < 512 && k != 64 && k != 256) {
@@ -67,13 +59,9 @@ static wmma_params get_wmma_params(size_t m, size_t n, size_t k) {
         surf_stride = 0;
     }
 
-    size_t dst_surf_stride = is_matmul_64 ? 64 : (is_matmul_256 ? 256 : out_width_stride);
+    size_t dst_surf_stride = m_padded;
 
-    size_t notch_blocks = std::min((size_t)13, align_out / 32);
-    size_t notch_val = 8 * notch_blocks - 1;
-    if (is_kn_64 || is_kn_256 || is_kn_512 || is_kn_lg_512 || k > 7872) {
-        notch_val = 0;
-    }
+    size_t notch_val = 0;
 
     return {
         m, n, k, align_in, align_out,
@@ -82,6 +70,7 @@ static wmma_params get_wmma_params(size_t m, size_t n, size_t k) {
         surf_stride, dst_surf_stride, notch_val
     };
 }
+
 
 void rk_compute_matmul(rk_device& dev, struct ggml_tensor* op) {
     struct ggml_tensor* weights_tensor = op->src[0];
@@ -102,7 +91,7 @@ void rk_compute_matmul(rk_device& dev, struct ggml_tensor* op) {
 
     wmma_params p = get_wmma_params(m, n, k);
 
-    std::vector<uint16_t> in_pack(p.m * p.align_in, 0);
+    std::vector<uint16_t> in_pack(p.data_in_height * p.align_in, 0);
     std::vector<uint16_t> wt_pack(p.align_out * p.align_in, 0);
 
     const uint16_t* a_matrix = static_cast<const uint16_t*>(features_tensor->data);
@@ -125,8 +114,12 @@ void rk_compute_matmul(rk_device& dev, struct ggml_tensor* op) {
             }
         }
     } else {
+        std::fill(in_pack.begin(), in_pack.end(), 0);
         for (size_t r = 0; r < m; ++r) {
-            std::memcpy(&in_pack[r * p.align_in], &a_matrix[r * k], k * sizeof(uint16_t));
+            for (size_t col = 0; col < k; ++col) {
+                size_t in_idx = (col / 8) * (p.data_in_height * 8) + r * 8 + (col % 8);
+                in_pack[in_idx] = a_matrix[r * k + col];
+            }
         }
         for (size_t r = 0; r < n; ++r) {
             for (size_t c = 0; c < k; ++c) {
@@ -139,8 +132,7 @@ void rk_compute_matmul(rk_device& dev, struct ggml_tensor* op) {
     size_t in_bytes = in_pack.size() * sizeof(uint16_t);
     size_t wt_bytes = wt_pack.size() * sizeof(uint16_t);
 
-    size_t out_stride = p.align_out * sizeof(float);
-    size_t out_bytes = std::max((size_t)0x100, (m - 1) * out_stride + n * sizeof(float));
+    size_t out_bytes = std::max((size_t)0x100, p.align_out * p.dataout_height * sizeof(float));
 
     rk_buffer input_buf = dev.alloc(in_bytes, 0, "matmul_input");
     rk_buffer weight_buf = dev.alloc(wt_bytes, 0, "matmul_weight");
@@ -163,29 +155,20 @@ void rk_compute_matmul(rk_device& dev, struct ggml_tensor* op) {
     uint32_t s_pointer = (1 << 3) | (1 << 2) | (1 << 1);
     emit_raw(q, RKNPU_TARGET_DPU, REG_DPU_S_POINTER, s_pointer);
 
-    bool is_kn_64 = (k == 64 && n == 64);
-    bool is_kn_256 = (k == 256 && n == 256);
-    bool is_kn_512 = (k == 512 && n == 512);
-    bool is_kn_lg_512 = (k > 512 && n > 512);
-    bool is_m_1_kn_768 = (m == 1 && k == 768 && n == 768);
-    bool is_m_1_k768_n2048 = (m == 1 && k == 768 && n == 2048);
-    bool is_m_1_kn_2048 = (m == 1 && k == 2048 && n == 2048);
-
     uint32_t conv_con1 = (2 << 7) | (2 << 4);
-    if (!(is_kn_64 || is_kn_256 || is_kn_512 || is_kn_lg_512 || is_m_1_kn_768 || is_m_1_k768_n2048 || is_m_1_kn_2048)) {
-        conv_con1 |= (1 << 29);
-    }
     emit_raw(q, RKNPU_TARGET_CNA, REG_CNA_CONV_CON1, conv_con1);
 
     emit_raw(q, RKNPU_TARGET_CNA, REG_CNA_CONV_CON2, p.feature_grains << 4);
     emit_raw(q, RKNPU_TARGET_CNA, REG_CNA_CONV_CON3, (1 << 3) | 1);
+
     emit_raw(q, RKNPU_TARGET_CNA, REG_CNA_DATA_SIZE0, (p.data_in_width << 16) | p.data_in_height);
     emit_raw(q, RKNPU_TARGET_CNA, REG_CNA_DATA_SIZE1, ((p.align_in - 1) << 16) | p.align_in);
     emit_raw(q, RKNPU_TARGET_CNA, REG_CNA_DATA_SIZE2, p.dataout_width);
     emit_raw(q, RKNPU_TARGET_CNA, REG_CNA_DATA_SIZE3, p.dataout_width * p.dataout_height);
-    emit_raw(q, RKNPU_TARGET_CNA, REG_CNA_WEIGHT_SIZE0, p.weight_bytes_per_kernel * p.align_out);
-    emit_raw(q, RKNPU_TARGET_CNA, REG_CNA_WEIGHT_SIZE1, p.weight_bytes_per_kernel);
-    emit_raw(q, RKNPU_TARGET_CNA, REG_CNA_WEIGHT_SIZE2, (1 << 24) | (1 << 16) | p.align_out);
+
+    emit_raw(q, RKNPU_TARGET_CNA, REG_CNA_DMA_CON0, (15 << 16) | 15);
+    emit_raw(q, RKNPU_TARGET_CNA, REG_CNA_DMA_CON1, p.line_stride);
+    emit_raw(q, RKNPU_TARGET_CNA, REG_CNA_DMA_CON2, p.surf_stride);
 
     uint32_t cbuf_con0 = ((12 - p.data_bank) << 4) | p.data_bank;
     emit_raw(q, RKNPU_TARGET_CNA, REG_CNA_CBUF_CON0, cbuf_con0);
@@ -200,14 +183,12 @@ void rk_compute_matmul(rk_device& dev, struct ggml_tensor* op) {
     emit_raw(q, RKNPU_TARGET_CNA, REG_CNA_CVT_CON4, 1 << 16);
 
     emit_raw(q, RKNPU_TARGET_CNA, REG_CNA_FEATURE_DATA_ADDR, input_buf.dma_addr);
-    emit_raw(q, RKNPU_TARGET_CNA, REG_CNA_DMA_CON0, (15 << 16) | 15);
-    emit_raw(q, RKNPU_TARGET_CNA, REG_CNA_DMA_CON1, p.line_stride);
-    emit_raw(q, RKNPU_TARGET_CNA, REG_CNA_DMA_CON2, p.surf_stride & 0x0fffffff);
-
     emit_raw(q, RKNPU_TARGET_CNA, REG_CNA_FC_DATA_SIZE0, (p.data_in_width << 16) | p.data_in_height);
     emit_raw(q, RKNPU_TARGET_CNA, REG_CNA_FC_DATA_SIZE1, p.align_in);
-
     emit_raw(q, RKNPU_TARGET_CNA, REG_CNA_DCOMP_ADDR0, weight_buf.dma_addr);
+    emit_raw(q, RKNPU_TARGET_CNA, REG_CNA_WEIGHT_SIZE0, p.weight_bytes_per_kernel * p.align_out);
+    emit_raw(q, RKNPU_TARGET_CNA, REG_CNA_WEIGHT_SIZE1, p.weight_bytes_per_kernel);
+    emit_raw(q, RKNPU_TARGET_CNA, REG_CNA_WEIGHT_SIZE2, (1 << 24) | (1 << 16) | p.align_out);
 
     emit_raw(q, RKNPU_TARGET_CORE, REG_CORE_MISC_CFG, (2 << 8) | 1);
     emit_raw(q, RKNPU_TARGET_CORE, REG_CORE_DATAOUT_SIZE_0, ((p.dataout_height - 1) << 16) | (p.dataout_width - 1));
@@ -249,130 +230,17 @@ void rk_compute_matmul(rk_device& dev, struct ggml_tensor* op) {
     float* dst_ptr = static_cast<float*>(dst_tensor->data);
     const float* raw_ptr = static_cast<const float*>(output_buf.va);
 
-    if ((m == 64 && n == 64 && k == 64) || (m == 256 && n == 256 && k == 256)) {
-        const size_t c2 = 4;
-        for (size_t col = 0; col < n; ++col) {
-            size_t plane = col / c2;
-            size_t offset = col % c2;
-            size_t plane_base = plane * m * c2;
-            for (size_t row = 0; row < m; ++row) {
-                dst_ptr[row * n + col] = raw_ptr[plane_base + row * c2 + offset];
-            }
-        }
-    } else {
-        size_t stride = p.align_out;
+    const size_t c2 = 4;
+    for (size_t col = 0; col < n; ++col) {
+        size_t plane = col / c2;
+        size_t offset = col % c2;
+        size_t plane_base = plane * p.dataout_height * c2;
         for (size_t row = 0; row < m; ++row) {
-            for (size_t col = 0; col < n; ++col) {
-                dst_ptr[row * n + col] = raw_ptr[row * stride + col];
-            }
+            dst_ptr[row * n + col] = raw_ptr[plane_base + row * c2 + offset];
         }
     }
 
-    if ((m == 1 && n == 16 && k == 256) || (m == 16 && n == 16 && k == 256)) {
-        std::printf("ggml-rockchip matmul debug (m=%zu, n=%zu, k=%zu):\n", m, n, k);
-        std::printf("  Command buffer Q (%zu elements):\n", q.size());
-        for (size_t i = 0; i < q.size(); ++i) {
-            std::printf("    [%2zu] 0x%016llx\n", i, (unsigned long long)q[i]);
-        }
-        std::printf("  weights_tensor: ne=[%lld, %lld, %lld, %lld], nb=[%zu, %zu, %zu, %zu]\n",
-            weights_tensor->ne[0], weights_tensor->ne[1], weights_tensor->ne[2], weights_tensor->ne[3],
-            weights_tensor->nb[0], weights_tensor->nb[1], weights_tensor->nb[2], weights_tensor->nb[3]);
-        std::printf("  features_tensor: ne=[%lld, %lld, %lld, %lld], nb=[%zu, %zu, %zu, %zu]\n",
-            features_tensor->ne[0], features_tensor->ne[1], features_tensor->ne[2], features_tensor->ne[3],
-            features_tensor->nb[0], features_tensor->nb[1], features_tensor->nb[2], features_tensor->nb[3]);
-        std::printf("  dst_tensor: ne=[%lld, %lld, %lld, %lld], nb=[%zu, %zu, %zu, %zu]\n",
-            dst_tensor->ne[0], dst_tensor->ne[1], dst_tensor->ne[2], dst_tensor->ne[3],
-            dst_tensor->nb[0], dst_tensor->nb[1], dst_tensor->nb[2], dst_tensor->nb[3]);
-        std::printf("  Input (first 10 of row 0): ");
-        for (int i = 0; i < 10; ++i) {
-            ggml_fp16_t f; std::memcpy(&f, &a_matrix[i], sizeof(f));
-            std::printf("%f ", ggml_fp16_to_fp32(f));
-        }
-        std::printf("\n  Weight (first 10 of row 0): ");
-        for (int i = 0; i < 10; ++i) {
-            ggml_fp16_t f; std::memcpy(&f, &b_matrix[i], sizeof(f));
-            std::printf("%f ", ggml_fp16_to_fp32(f));
-        }
-        std::printf("\n  in_pack (first 5 of row 0, 1, 2):\n");
-        for (size_t r = 0; r < std::min(m, (size_t)3); ++r) {
-            std::printf("    row %zu: ", r);
-            for (size_t i = 0; i < 5; ++i) {
-                ggml_fp16_t f; std::memcpy(&f, &in_pack[r * p.align_in + i], sizeof(f));
-                std::printf("%f ", ggml_fp16_to_fp32(f));
-            }
-            std::printf("\n");
-        }
-        std::printf("  wt_pack (first 5 of kernel 0, 1, 2):\n");
-        for (size_t r = 0; r < std::min(n, (size_t)3); ++r) {
-            std::printf("    kernel %zu: ", r);
-            for (size_t i = 0; i < 5; ++i) {
-                // Find where element i of kernel r is in wt_pack
-                size_t wt_idx = (r / 16) * (p.align_in / 32) * 512 + (i / 32) * 512 + (r % 16) * 32 + (i % 32);
-                ggml_fp16_t f; std::memcpy(&f, &wt_pack[wt_idx], sizeof(f));
-                std::printf("%f ", ggml_fp16_to_fp32(f));
-            }
-            std::printf("\n");
-        }
-        std::printf("  NPU raw matrix (%zux%zu):\n", m, n);
-        for (size_t row = 0; row < m; ++row) {
-            std::printf("    row %2zu: ", row);
-            for (size_t col = 0; col < n; ++col) {
-                std::printf("%7.3f ", raw_ptr[row * p.align_out + col]);
-            }
-            std::printf("\n");
-        }
-        std::printf("  CPU reference matrix (%zux%zu):\n", m, n);
-        for (size_t row = 0; row < m; ++row) {
-            std::printf("    row %2zu: ", row);
-            for (size_t col = 0; col < n; ++col) {
-                float sum = 0.0f;
-                for (size_t i = 0; i < k; ++i) {
-                    ggml_fp16_t fa; std::memcpy(&fa, &a_matrix[row * k + i], sizeof(fa));
-                    ggml_fp16_t fb; std::memcpy(&fb, &b_matrix[col * k + i], sizeof(fb));
-                    sum += ggml_fp16_to_fp32(fa) * ggml_fp16_to_fp32(fb);
-                }
-                std::printf("%7.3f ", sum);
-            }
-            std::printf("\n");
-        }
-        
-        // Compute all possible dot products
-        float ref_matrix[16][16];
-        for (size_t ar = 0; ar < m; ++ar) {
-            for (size_t br = 0; br < n; ++br) {
-                float sum = 0.0f;
-                for (size_t i = 0; i < k; ++i) {
-                    ggml_fp16_t fa; std::memcpy(&fa, &a_matrix[ar * k + i], sizeof(fa));
-                    ggml_fp16_t fb; std::memcpy(&fb, &b_matrix[br * k + i], sizeof(fb));
-                    sum += ggml_fp16_to_fp32(fa) * ggml_fp16_to_fp32(fb);
-                }
-                ref_matrix[ar][br] = sum;
-            }
-        }
 
-        std::printf("  NPU to Ref row-pair matches:\n");
-        for (size_t row = 0; row < m; ++row) {
-            for (size_t col = 0; col < n; ++col) {
-                float val = raw_ptr[row * p.align_out + col];
-                size_t best_ar = 99, best_br = 99;
-                float best_diff = 999.0f;
-                for (size_t ar = 0; ar < m; ++ar) {
-                    for (size_t br = 0; br < n; ++br) {
-                        float diff = std::abs(ref_matrix[ar][br] - val);
-                        if (diff < best_diff) {
-                            best_diff = diff;
-                            best_ar = ar;
-                            best_br = br;
-                        }
-                    }
-                }
-                if (best_diff < 0.2f) {
-                    std::printf("    npu[%zu, %zu] -> ref_dot(a_row=%zu, b_row=%zu) (diff=%f)\n", row, col, best_ar, best_br, best_diff);
-                }
-            }
-        }
-        std::printf("\n");
-    }
 
     dev.free(input_buf);
     dev.free(weight_buf);
