@@ -89,6 +89,165 @@ void rk_compute_matmul(rk_device& dev, struct ggml_tensor* op) {
     size_t n = m_ggml;
     size_t k = k_ggml;
 
+    // N-splitting: limit weight buffer to ~4MB to avoid NPU MEM_CREATE failures
+    // Original packing and register config is preserved for each chunk
+    const size_t MAX_WEIGHT_BYTES = 4 * 1024 * 1024;
+    size_t align_in_est = std::max((size_t)32, align_up(k, 32));
+    size_t max_n_per_chunk = MAX_WEIGHT_BYTES / (align_in_est * sizeof(uint16_t));
+    max_n_per_chunk = std::max((size_t)32, max_n_per_chunk - (max_n_per_chunk % 32));
+
+    if (n > max_n_per_chunk) {
+        // Split along n dimension and accumulate results
+        std::vector<float> accum(m * n, 0.0f);
+        size_t n_done = 0;
+        while (n_done < n) {
+            size_t n_chunk = std::min(max_n_per_chunk, n - n_done);
+
+            wmma_params p_chunk = get_wmma_params(m, n_chunk, k);
+
+            std::vector<uint16_t> in_pack(p_chunk.data_in_height * p_chunk.align_in, 0);
+            std::vector<uint16_t> wt_pack(p_chunk.align_out * p_chunk.align_in, 0);
+
+            const uint16_t* a_matrix_f16 = nullptr;
+            const float* a_matrix_f32 = nullptr;
+            if (features_tensor->type == GGML_TYPE_F32) {
+                a_matrix_f32 = static_cast<const float*>(features_tensor->data);
+            } else {
+                a_matrix_f16 = static_cast<const uint16_t*>(features_tensor->data);
+            }
+            const uint16_t* b_matrix = static_cast<const uint16_t*>(weights_tensor->data);
+
+            auto get_a_val = [&](size_t idx) -> uint16_t {
+                if (a_matrix_f32) {
+                    return ggml_fp32_to_fp16(a_matrix_f32[idx]);
+                } else {
+                    return a_matrix_f16[idx];
+                }
+            };
+
+            // Pack input (same for all chunks)
+            std::fill(in_pack.begin(), in_pack.end(), 0);
+            for (size_t r = 0; r < m; ++r) {
+                for (size_t col = 0; col < k; ++col) {
+                    size_t in_idx = (col / 8) * (p_chunk.data_in_height * 8) + r * 8 + (col % 8);
+                    in_pack[in_idx] = get_a_val(r * k + col);
+                }
+            }
+
+            // Pack weight slice for this n_chunk (original packing logic)
+            for (size_t r = 0; r < n_chunk; ++r) {
+                for (size_t c = 0; c < k; ++c) {
+                    size_t wt_idx = (r / 16) * (p_chunk.align_in / 32) * 512 + (c / 32) * 512 + (r % 16) * 32 + (c % 32);
+                    wt_pack[wt_idx] = b_matrix[(n_done + r) * k + c];
+                }
+            }
+
+            size_t in_bytes = in_pack.size() * sizeof(uint16_t);
+            size_t wt_bytes = wt_pack.size() * sizeof(uint16_t);
+            size_t out_bytes = std::max((size_t)0x100, p_chunk.align_out * p_chunk.dataout_height * sizeof(float));
+
+            rk_buffer input_buf = dev.alloc(in_bytes, 0, "matmul_input");
+            rk_buffer weight_buf = dev.alloc(wt_bytes, 0, "matmul_weight");
+            rk_buffer output_buf = dev.alloc(out_bytes, 0, "matmul_output");
+
+            if (!input_buf.va || !weight_buf.va || !output_buf.va) {
+                std::fprintf(stderr, "ggml-rockchip: error: failed to allocate matmul buffers (n_chunk=%zu).\n", n_chunk);
+                if (input_buf.va) dev.free(input_buf);
+                if (weight_buf.va) dev.free(weight_buf);
+                if (output_buf.va) dev.free(output_buf);
+                n_done += n_chunk;
+                continue;
+            }
+
+            std::memcpy(input_buf.va, in_pack.data(), in_bytes);
+            std::memcpy(weight_buf.va, wt_pack.data(), wt_bytes);
+
+            std::vector<uint64_t> q;
+            q.reserve(64);
+
+            uint32_t s_pointer = (1 << 3) | (1 << 2) | (1 << 1);
+            emit_raw(q, RKNPU_TARGET_DPU, REG_DPU_S_POINTER, s_pointer);
+            uint32_t conv_con1 = (2 << 7) | (2 << 4);
+            emit_raw(q, RKNPU_TARGET_CNA, REG_CNA_CONV_CON1, conv_con1);
+            emit_raw(q, RKNPU_TARGET_CNA, REG_CNA_CONV_CON2, p_chunk.feature_grains << 4);
+            emit_raw(q, RKNPU_TARGET_CNA, REG_CNA_CONV_CON3, (1 << 3) | 1);
+            emit_raw(q, RKNPU_TARGET_CNA, REG_CNA_DATA_SIZE0, (p_chunk.data_in_width << 16) | p_chunk.data_in_height);
+            emit_raw(q, RKNPU_TARGET_CNA, REG_CNA_DATA_SIZE1, ((p_chunk.align_in - 1) << 16) | p_chunk.align_in);
+            emit_raw(q, RKNPU_TARGET_CNA, REG_CNA_DATA_SIZE2, p_chunk.dataout_width);
+            emit_raw(q, RKNPU_TARGET_CNA, REG_CNA_DATA_SIZE3, p_chunk.dataout_width * p_chunk.dataout_height);
+            emit_raw(q, RKNPU_TARGET_CNA, REG_CNA_DMA_CON0, (15 << 16) | 15);
+            emit_raw(q, RKNPU_TARGET_CNA, REG_CNA_DMA_CON1, p_chunk.line_stride);
+            emit_raw(q, RKNPU_TARGET_CNA, REG_CNA_DMA_CON2, p_chunk.surf_stride);
+            uint32_t cbuf_con0 = ((12 - p_chunk.data_bank) << 4) | p_chunk.data_bank;
+            emit_raw(q, RKNPU_TARGET_CNA, REG_CNA_CBUF_CON0, cbuf_con0);
+            uint32_t cbuf_entries = ((p_chunk.data_in_width * p_chunk.align_in + 31) / 32);
+            emit_raw(q, RKNPU_TARGET_CNA, REG_CNA_CBUF_CON1, cbuf_entries);
+            emit_raw(q, RKNPU_TARGET_CNA, REG_CNA_CVT_CON0, 0xB);
+            emit_raw(q, RKNPU_TARGET_CNA, REG_CNA_CVT_CON1, 1 << 16);
+            emit_raw(q, RKNPU_TARGET_CNA, REG_CNA_CVT_CON2, 1 << 16);
+            emit_raw(q, RKNPU_TARGET_CNA, REG_CNA_CVT_CON3, 1 << 16);
+            emit_raw(q, RKNPU_TARGET_CNA, REG_CNA_CVT_CON4, 1 << 16);
+            emit_raw(q, RKNPU_TARGET_CNA, REG_CNA_FEATURE_DATA_ADDR, input_buf.dma_addr);
+            emit_raw(q, RKNPU_TARGET_CNA, REG_CNA_FC_DATA_SIZE0, (p_chunk.data_in_width << 16) | p_chunk.data_in_height);
+            emit_raw(q, RKNPU_TARGET_CNA, REG_CNA_FC_DATA_SIZE1, p_chunk.align_in);
+            emit_raw(q, RKNPU_TARGET_CNA, REG_CNA_DCOMP_ADDR0, weight_buf.dma_addr);
+            emit_raw(q, RKNPU_TARGET_CNA, REG_CNA_WEIGHT_SIZE0, p_chunk.weight_bytes_per_kernel * p_chunk.align_out);
+            emit_raw(q, RKNPU_TARGET_CNA, REG_CNA_WEIGHT_SIZE1, p_chunk.weight_bytes_per_kernel);
+            emit_raw(q, RKNPU_TARGET_CNA, REG_CNA_WEIGHT_SIZE2, (1 << 24) | (1 << 16) | p_chunk.align_out);
+            emit_raw(q, RKNPU_TARGET_CORE, REG_CORE_MISC_CFG, (2 << 8) | 1);
+            emit_raw(q, RKNPU_TARGET_CORE, REG_CORE_DATAOUT_SIZE_0, ((p_chunk.dataout_height - 1) << 16) | (p_chunk.dataout_width - 1));
+            emit_raw(q, RKNPU_TARGET_CORE, REG_CORE_DATAOUT_SIZE_1, p_chunk.align_out - 1);
+            emit_raw(q, RKNPU_TARGET_DPU, REG_DPU_FEATURE_MODE_CFG, (15 << 5) | (2 << 1));
+            emit_raw(q, RKNPU_TARGET_DPU, REG_DPU_DATA_FORMAT, (5 << 29) | (2 << 26) | 2);
+            emit_raw(q, RKNPU_TARGET_DPU, REG_DPU_DST_BASE_ADDR, output_buf.dma_addr);
+            emit_raw(q, RKNPU_TARGET_DPU, REG_DPU_DST_SURF_STRIDE, p_chunk.dst_surf_stride << 4);
+            emit_raw(q, RKNPU_TARGET_DPU, REG_DPU_DATA_CUBE_WIDTH, p_chunk.dataout_width - 1);
+            emit_raw(q, RKNPU_TARGET_DPU, REG_DPU_DATA_CUBE_HEIGHT, p_chunk.dataout_height - 1);
+            emit_raw(q, RKNPU_TARGET_DPU, REG_DPU_DATA_CUBE_NOTCH_ADDR, (p_chunk.notch_val << 16) | p_chunk.notch_val);
+            emit_raw(q, RKNPU_TARGET_DPU, REG_DPU_DATA_CUBE_CHANNEL, ((p_chunk.align_out - 1) << 16) | (p_chunk.align_out - 1));
+            emit_raw(q, RKNPU_TARGET_DPU, REG_DPU_BS_CFG, (1 << 6) | (1 << 4) | (1 << 1) | 1);
+            emit_raw(q, RKNPU_TARGET_DPU, REG_DPU_BS_OW_CFG, (3 << 8) | (3 << 5) | (3 << 2) | 2);
+            emit_raw(q, RKNPU_TARGET_DPU, REG_DPU_WDMA_SIZE_0, p_chunk.align_out - 1);
+            emit_raw(q, RKNPU_TARGET_DPU, REG_DPU_WDMA_SIZE_1, ((p_chunk.dataout_height - 1) << 16) | (p_chunk.dataout_width - 1));
+            emit_raw(q, RKNPU_TARGET_DPU, REG_DPU_BN_CFG, (1 << 6) | (1 << 4) | (1 << 1) | 1);
+            emit_raw(q, RKNPU_TARGET_DPU, REG_DPU_EW_CFG, (1 << 9) | (1 << 8) | (1 << 7) | (1 << 1) | 1);
+            emit_raw(q, RKNPU_TARGET_DPU, REG_DPU_SURFACE_ADD, (p_chunk.dst_surf_stride * 4) << 4);
+            q.push_back(0x00810000000d0008);
+
+            std::memcpy(dev.cmd_buf.va, q.data(), q.size() * sizeof(uint64_t));
+
+            if (!dev.submit(dev.task_buf, dev.cmd_buf, q.size(), 1)) {
+                std::fprintf(stderr, "ggml-rockchip: error: NPU matmul submission failed (n_chunk=%zu).\n", n_chunk);
+                dev.free(input_buf);
+                dev.free(weight_buf);
+                dev.free(output_buf);
+                n_done += n_chunk;
+                continue;
+            }
+
+            // Unpack output (original unpacking logic)
+            const float* raw_ptr = static_cast<const float*>(output_buf.va);
+            const size_t c2 = 4;
+            for (size_t col = 0; col < n_chunk; ++col) {
+                size_t plane = col / c2;
+                size_t offset = col % c2;
+                size_t plane_base = plane * p_chunk.dataout_height * c2;
+                for (size_t row = 0; row < m; ++row) {
+                    accum[row * n + n_done + col] = raw_ptr[plane_base + row * c2 + offset];
+                }
+            }
+
+            dev.free(input_buf);
+            dev.free(weight_buf);
+            dev.free(output_buf);
+            n_done += n_chunk;
+        }
+
+        float* dst_ptr = static_cast<float*>(dst_tensor->data);
+        std::memcpy(dst_ptr, accum.data(), m * n * sizeof(float));
+        return;
+    }
+
     wmma_params p = get_wmma_params(m, n, k);
 
     std::vector<uint16_t> in_pack(p.data_in_height * p.align_in, 0);
@@ -253,8 +412,6 @@ void rk_compute_matmul(rk_device& dev, struct ggml_tensor* op) {
             dst_ptr[row * n + col] = raw_ptr[plane_base + row * c2 + offset];
         }
     }
-
-
 
     dev.free(input_buf);
     dev.free(weight_buf);
