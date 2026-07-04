@@ -109,9 +109,9 @@ static enum ggml_status ggml_backend_rockchip_graph_compute(ggml_backend_t backe
 
 static void ggml_backend_rockchip_buffer_free_buffer(ggml_backend_buffer_t buffer) {
     auto * ctx = static_cast<ggml_backend_rockchip_buffer_context *>(buffer->context);
-    auto * buft_ctx = static_cast<ggml_backend_rockchip_context *>(buffer->buft->device->context);
-    
-    buft_ctx->dev->free(ctx->virtual_buffer);
+    if (ctx->virtual_buffer.va) {
+        std::free(ctx->virtual_buffer.va);
+    }
     delete ctx;
 }
 
@@ -161,15 +161,17 @@ static const char * ggml_backend_rockchip_buffer_type_get_name(ggml_backend_buff
 }
 
 static ggml_backend_buffer_t ggml_backend_rockchip_buffer_type_alloc_buffer(ggml_backend_buffer_type_t buft, size_t size) {
-    auto * dev_ctx = static_cast<ggml_backend_rockchip_context *>(buft->device->context);
-    
     auto * ctx = new ggml_backend_rockchip_buffer_context();
-    ctx->virtual_buffer = dev_ctx->dev->alloc(size, 0, "rockchip_virtual_buffer");
-    
-    if (!ctx->virtual_buffer.va) {
+    ctx->virtual_buffer.size = size;
+
+    // Use host RAM for tensor storage - NPU buffers are allocated separately in rk_compute_matmul
+    void * ptr = nullptr;
+    if (posix_memalign(&ptr, 64, size) != 0) {
         delete ctx;
         return nullptr;
     }
+    ctx->virtual_buffer.va = ptr;
+    ctx->virtual_buffer.dma_addr = 0;
 
     static const ggml_backend_buffer_i rockchip_buffer_interface = {
         /* .free_buffer   = */ ggml_backend_rockchip_buffer_free_buffer,
@@ -252,7 +254,7 @@ static bool ggml_backend_rockchip_device_supports_op(ggml_backend_dev_t dev, con
     }
     if (op->op == GGML_OP_MUL_MAT) {
         bool src0_ok = op->src[0] && op->src[0]->type == GGML_TYPE_F16 && ggml_is_contiguous(op->src[0]);
-        bool src1_ok = op->src[1] && op->src[1]->type == GGML_TYPE_F16 && ggml_is_contiguous(op->src[1]);
+        bool src1_ok = op->src[1] && (op->src[1]->type == GGML_TYPE_F16 || op->src[1]->type == GGML_TYPE_F32) && ggml_is_contiguous(op->src[1]);
         bool dst_ok  = op->type == GGML_TYPE_F32 && ggml_is_contiguous(op);
         bool no_batch = op->src[0]->ne[2] == 1 && op->src[0]->ne[3] == 1 &&
                         op->src[1]->ne[2] == 1 && op->src[1]->ne[3] == 1;

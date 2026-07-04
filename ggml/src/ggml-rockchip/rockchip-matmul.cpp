@@ -78,7 +78,7 @@ void rk_compute_matmul(rk_device& dev, struct ggml_tensor* op) {
     struct ggml_tensor* dst_tensor = op;
 
     GGML_ASSERT(weights_tensor->type == GGML_TYPE_F16);
-    GGML_ASSERT(features_tensor->type == GGML_TYPE_F16);
+    GGML_ASSERT(features_tensor->type == GGML_TYPE_F16 || features_tensor->type == GGML_TYPE_F32);
     GGML_ASSERT(dst_tensor->type == GGML_TYPE_F32);
 
     size_t k_ggml = weights_tensor->ne[0];
@@ -94,15 +94,29 @@ void rk_compute_matmul(rk_device& dev, struct ggml_tensor* op) {
     std::vector<uint16_t> in_pack(p.data_in_height * p.align_in, 0);
     std::vector<uint16_t> wt_pack(p.align_out * p.align_in, 0);
 
-    const uint16_t* a_matrix = static_cast<const uint16_t*>(features_tensor->data);
+    const uint16_t* a_matrix_f16 = nullptr;
+    const float* a_matrix_f32 = nullptr;
+    if (features_tensor->type == GGML_TYPE_F32) {
+        a_matrix_f32 = static_cast<const float*>(features_tensor->data);
+    } else {
+        a_matrix_f16 = static_cast<const uint16_t*>(features_tensor->data);
+    }
     const uint16_t* b_matrix = static_cast<const uint16_t*>(weights_tensor->data);
+
+    auto get_a_val = [&](size_t idx) -> uint16_t {
+        if (a_matrix_f32) {
+            return ggml_fp32_to_fp16(a_matrix_f32[idx]);
+        } else {
+            return a_matrix_f16[idx];
+        }
+    };
 
     if (m == 64 && n == 64 && k == 64) {
         for (size_t mm = 1; mm <= 64; ++mm) {
             for (size_t kk = 1; kk <= 64; ++kk) {
                 size_t plane = (kk - 1) / 8;
                 size_t offset = (kk - 1) % 8;
-                in_pack[plane * 64 * 8 + (mm - 1) * 8 + offset] = a_matrix[(mm - 1) * k + (kk - 1)];
+                in_pack[plane * 64 * 8 + (mm - 1) * 8 + offset] = get_a_val((mm - 1) * k + (kk - 1));
             }
         }
         for (size_t nn = 1; nn <= 64; ++nn) {
@@ -118,7 +132,7 @@ void rk_compute_matmul(rk_device& dev, struct ggml_tensor* op) {
         for (size_t r = 0; r < m; ++r) {
             for (size_t col = 0; col < k; ++col) {
                 size_t in_idx = (col / 8) * (p.data_in_height * 8) + r * 8 + (col % 8);
-                in_pack[in_idx] = a_matrix[r * k + col];
+                in_pack[in_idx] = get_a_val(r * k + col);
             }
         }
         for (size_t r = 0; r < n; ++r) {
